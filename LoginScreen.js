@@ -1,87 +1,133 @@
 
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import {
   View, Text, TextInput, TouchableOpacity,
-  Alert, ActivityIndicator, StyleSheet
+  Alert, ActivityIndicator, StyleSheet,
+  Linking
 } from 'react-native';
 import { supabase } from './supabase';
 
+const REDIRECT_URL = 'ruhatar://auth';
+
 export default function LoginScreen({ onLogin }) {
   const [email, setEmail] = useState('');
-  const [code, setCode] = useState('');
-  const [step, setStep] = useState('email');
   const [loading, setLoading] = useState(false);
 
-  const address = email.trim().toLowerCase();
-
-  async function sendCode() {
-    if (!address || !address.includes('@')) {
-      Alert.alert('Hiba', 'Adj meg egy érvényes e-mail-címet.');
-      return;
-    }
-
-    setLoading(true);
-    try {
-      const { error } = await supabase.auth.signInWithOtp({
-        email: address,
-        options: {
-          shouldCreateUser: false
-        }
-      });
-
-      if (error) throw error;
-
-      setStep('code');
-      Alert.alert(
-        'Aktiválás',
-        'Ha a fiókod létezik, ellenőrző kódot kapsz e-mailben.'
-      );
-    } catch (e) {
-      Alert.alert('Hiba', e.message);
-    } finally {
-      setLoading(false);
-    }
-  }
-
-  async function activate() {
-    if (!code.trim()) {
-      Alert.alert('Hiba', 'Írd be az ellenőrző kódot.');
-      return;
-    }
+  async function openLoginLink(url) {
+    if (!url || !url.startsWith(REDIRECT_URL)) return;
 
     setLoading(true);
 
     try {
-      const { data, error } = await supabase.auth.verifyOtp({
-        email: address,
-        token: code.trim(),
-        type: 'email'
+      const fragment = url.split('#')[1] || '';
+      const query = url.split('?')[1]?.split('#')[0] || '';
+
+      const params = new URLSearchParams(fragment || query);
+
+      const linkError = params.get('error_description');
+      if (linkError) throw new Error(linkError);
+
+      const accessToken = params.get('access_token');
+      const refreshToken = params.get('refresh_token');
+
+      if (!accessToken || !refreshToken) {
+        throw new Error(
+          'A hivatkozás nem tartalmaz érvényes munkamenetet. Kérj új linket.'
+        );
+      }
+
+      const { data, error } = await supabase.auth.setSession({
+        access_token: accessToken,
+        refresh_token: refreshToken
       });
 
       if (error) throw error;
+
+      const user = data.user;
+      if (!user) throw new Error('Nem sikerült azonosítani a felhasználót.');
 
       const { data: employee, error: employeeError } =
         await supabase
           .from('dolgozok')
           .select('id, nev, szerepkor')
-          .eq('id', data.user.id)
+          .eq('id', user.id)
           .maybeSingle();
 
       if (employeeError) throw employeeError;
 
       if (!employee) {
         await supabase.auth.signOut();
-
         Alert.alert(
           'Jóváhagyás szükséges',
-          'A tulajdonosnak előbb engedélyeznie kell a hozzáférésedet.'
+          'A fiókodhoz még nincs dolgozói hozzáférés.'
         );
         return;
       }
 
       onLogin?.(employee);
-    } catch (e) {
-      Alert.alert('Sikertelen aktiválás', e.message);
+    } catch (error) {
+      Alert.alert(
+        'Aktiválási hiba',
+        error.message || 'Nem sikerült az aktiválás.'
+      );
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  useEffect(() => {
+    let active = true;
+
+    Linking.getInitialURL().then(url => {
+      if (active && url) openLoginLink(url);
+    });
+
+    const subscription = Linking.addEventListener(
+      'url',
+      event => {
+        if (active) openLoginLink(event.url);
+      }
+    );
+
+    return () => {
+      active = false;
+      subscription.remove();
+    };
+  }, []);
+
+  async function sendLink() {
+    const address = email.trim().toLowerCase();
+
+    if (!address || !address.includes('@')) {
+      Alert.alert(
+        'Hiányzó adat',
+        'Adj meg egy érvényes e-mail-címet.'
+      );
+      return;
+    }
+
+    setLoading(true);
+
+    try {
+      const { error } = await supabase.auth.signInWithOtp({
+        email: address,
+        options: {
+          shouldCreateUser: false,
+          emailRedirectTo: REDIRECT_URL
+        }
+      });
+
+      if (error) throw error;
+
+      Alert.alert(
+        'Aktiváló link elküldve',
+        'Nyisd meg az e-mailt, és koppints a bejelentkezési linkre. A hivatkozás visszavezet a Ruhatár alkalmazásba.'
+      );
+    } catch (error) {
+      Alert.alert(
+        'Hiba',
+        error.message || 'Nem sikerült a link elküldése.'
+      );
     } finally {
       setLoading(false);
     }
@@ -93,64 +139,47 @@ export default function LoginScreen({ onLogin }) {
         <Text style={styles.title}>Ruhatár</Text>
 
         <Text style={styles.subtitle}>
-          {step === 'email'
-            ? 'Telefon egyszeri aktiválása'
-            : 'Ellenőrző kód megadása'}
+          Telefon egyszeri aktiválása
         </Text>
 
-        {step === 'email' ? (
-          <TextInput
-            style={styles.input}
-            placeholder="E-mail-cím"
-            keyboardType="email-address"
-            autoCapitalize="none"
-            value={email}
-            onChangeText={setEmail}
-          />
-        ) : (
-          <>
-            <Text style={styles.info}>
-              A kódot erre a címre kértük: {address}
-            </Text>
+        <Text style={styles.info}>
+          Add meg a regisztrált e-mail-címedet.
+          Nem kell jelszót megadnod.
+        </Text>
 
-            <TextInput
-              style={styles.input}
-              placeholder="E-mailben kapott kód"
-              keyboardType="number-pad"
-              value={code}
-              onChangeText={setCode}
-            />
-          </>
-        )}
+        <TextInput
+          style={styles.input}
+          placeholder="E-mail-cím"
+          keyboardType="email-address"
+          autoCapitalize="none"
+          autoComplete="email"
+          value={email}
+          onChangeText={setEmail}
+          editable={!loading}
+        />
 
         <TouchableOpacity
-          style={styles.button}
-          onPress={step === 'email' ? sendCode : activate}
+          style={[
+            styles.button,
+            loading && { opacity: 0.5 }
+          ]}
+          onPress={sendLink}
           disabled={loading}
         >
           {loading ? (
             <ActivityIndicator color="white" />
           ) : (
             <Text style={styles.buttonText}>
-              {step === 'email'
-                ? 'Aktiváló kód kérése'
-                : 'Telefon aktiválása'}
+              Aktiváló link kérése
             </Text>
           )}
         </TouchableOpacity>
 
-        {step === 'code' && (
-          <TouchableOpacity
-            onPress={() => {
-              setCode('');
-              setStep('email');
-            }}
-          >
-            <Text style={styles.link}>
-              Másik e-mail-cím vagy új kód
-            </Text>
-          </TouchableOpacity>
-        )}
+        <Text style={styles.note}>
+          Aktiválás után a Ruhatár automatikusan
+          bejelentkezve tart, amíg a munkamenet
+          érvényes.
+        </Text>
       </View>
     </View>
   );
@@ -175,10 +204,15 @@ const styles = StyleSheet.create({
     textAlign: 'center'
   },
   subtitle: {
-    fontSize: 16,
+    fontSize: 17,
     color: '#527064',
     textAlign: 'center',
-    marginBottom: 24
+    marginBottom: 20
+  },
+  info: {
+    color: '#527064',
+    marginBottom: 16,
+    textAlign: 'center'
   },
   input: {
     borderWidth: 1,
@@ -187,10 +221,6 @@ const styles = StyleSheet.create({
     padding: 14,
     marginBottom: 14,
     fontSize: 16
-  },
-  info: {
-    color: '#527064',
-    marginBottom: 16
   },
   button: {
     backgroundColor: '#246a4e',
@@ -203,9 +233,10 @@ const styles = StyleSheet.create({
     fontSize: 16,
     fontWeight: 'bold'
   },
-  link: {
-    color: '#246a4e',
+  note: {
+    color: '#777',
     textAlign: 'center',
-    padding: 16
+    marginTop: 18,
+    fontSize: 13
   }
 });
