@@ -1,225 +1,174 @@
 
 import React, { useState } from 'react';
 import {
-  View, Text, TextInput, TouchableOpacity, Alert,
-  ActivityIndicator, StyleSheet, ScrollView,
-  KeyboardAvoidingView, Platform
+  View, Text, TextInput, TouchableOpacity,
+  Alert, ActivityIndicator, StyleSheet
 } from 'react-native';
 import { supabase } from './supabase';
 
 export default function LoginScreen({ onLogin }) {
-  const [mode, setMode] = useState('login');
-  const [name, setName] = useState('');
   const [email, setEmail] = useState('');
-  const [password, setPassword] = useState('');
+  const [code, setCode] = useState('');
+  const [step, setStep] = useState('email');
   const [loading, setLoading] = useState(false);
 
-  async function submit() {
-    const address = email.trim().toLowerCase();
+  const address = email.trim().toLowerCase();
 
-    if (!address || (mode !== 'reset' && !password)) {
-      Alert.alert('Hiányzó adat', 'Töltsd ki a szükséges mezőket.');
+  async function sendCode() {
+    if (!address || !address.includes('@')) {
+      Alert.alert('Hiba', 'Adj meg egy érvényes e-mail-címet.');
       return;
     }
 
-    if (mode === 'register' && !name.trim()) {
-      Alert.alert('Hiányzó adat', 'Add meg a nevedet.');
-      return;
-    }
+    setLoading(true);
+    try {
+      const { error } = await supabase.auth.signInWithOtp({
+        email: address,
+        options: {
+          shouldCreateUser: false
+        }
+      });
 
-    if (mode === 'register' && password.length < 8) {
-      Alert.alert('Rövid jelszó', 'Legalább 8 karakter szükséges.');
+      if (error) throw error;
+
+      setStep('code');
+      Alert.alert(
+        'Aktiválás',
+        'Ha a fiókod létezik, ellenőrző kódot kapsz e-mailben.'
+      );
+    } catch (e) {
+      Alert.alert('Hiba', e.message);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function activate() {
+    if (!code.trim()) {
+      Alert.alert('Hiba', 'Írd be az ellenőrző kódot.');
       return;
     }
 
     setLoading(true);
 
     try {
-      if (mode === 'reset') {
-        const { error } = await supabase.auth.resetPasswordForEmail(address);
-        if (error) throw error;
-
-        Alert.alert(
-          'E-mail elküldve',
-          'Ha létezik a fiók, jelszó-visszaállító levelet kapsz. A jelszócsere linkjének alkalmazáson belüli kezelése még beállítást igényel.'
-        );
-        setMode('login');
-        return;
-      }
-
-      if (mode === 'register') {
-        const { data, error } = await supabase.auth.signUp({
-          email: address,
-          password,
-          options: {
-            data: { nev: name.trim() }
-          }
-        });
-
-        if (error) throw error;
-        if (data.session) await supabase.auth.signOut();
-
-        Alert.alert(
-          'Regisztráció elküldve',
-          'Ellenőrizd az e-mailjeidet. A készlethez tulajdonosi jóváhagyás után férhetsz hozzá.'
-        );
-
-        setPassword('');
-        setMode('login');
-        return;
-      }
-
-      const { data, error } = await supabase.auth.signInWithPassword({
+      const { data, error } = await supabase.auth.verifyOtp({
         email: address,
-        password
+        token: code.trim(),
+        type: 'email'
       });
 
       if (error) throw error;
 
-      const { data: employee, error: employeeError } = await supabase
-        .from('dolgozok')
-        .select('id, nev, szerepkor')
-        .eq('id', data.user.id)
-        .maybeSingle();
+      const { data: employee, error: employeeError } =
+        await supabase
+          .from('dolgozok')
+          .select('id, nev, szerepkor')
+          .eq('id', data.user.id)
+          .maybeSingle();
 
       if (employeeError) throw employeeError;
 
       if (!employee) {
         await supabase.auth.signOut();
+
         Alert.alert(
-          'Jóváhagyásra vár',
-          'A fiókodhoz még nincs dolgozói hozzáférés. A tulajdonos jóváhagyása szükséges.'
+          'Jóváhagyás szükséges',
+          'A tulajdonosnak előbb engedélyeznie kell a hozzáférésedet.'
         );
         return;
       }
 
       onLogin?.(employee);
-    } catch (error) {
-      Alert.alert('Hiba', error.message || 'Sikertelen művelet.');
+    } catch (e) {
+      Alert.alert('Sikertelen aktiválás', e.message);
     } finally {
       setLoading(false);
     }
   }
 
-  const title =
-    mode === 'register' ? 'Regisztráció' :
-    mode === 'reset' ? 'Elfelejtett jelszó' :
-    'Dolgozói bejelentkezés';
-
   return (
-    <KeyboardAvoidingView
-      style={styles.container}
-      behavior={Platform.OS === 'ios' ? 'padding' : undefined}
-    >
-      <ScrollView
-        contentContainerStyle={styles.content}
-        keyboardShouldPersistTaps="handled"
-      >
-        <View style={styles.card}>
-          <Text style={styles.brand}>Ruhatár</Text>
-          <Text style={styles.subtitle}>{title}</Text>
+    <View style={styles.container}>
+      <View style={styles.card}>
+        <Text style={styles.title}>Ruhatár</Text>
 
-          {mode === 'register' && (
-            <TextInput
-              style={styles.input}
-              placeholder="Teljes név"
-              value={name}
-              onChangeText={setName}
-              autoCapitalize="words"
-            />
-          )}
+        <Text style={styles.subtitle}>
+          {step === 'email'
+            ? 'Telefon egyszeri aktiválása'
+            : 'Ellenőrző kód megadása'}
+        </Text>
 
+        {step === 'email' ? (
           <TextInput
             style={styles.input}
             placeholder="E-mail-cím"
-            value={email}
-            onChangeText={setEmail}
             keyboardType="email-address"
             autoCapitalize="none"
-            autoComplete="email"
+            value={email}
+            onChangeText={setEmail}
           />
+        ) : (
+          <>
+            <Text style={styles.info}>
+              A kódot erre a címre kértük: {address}
+            </Text>
 
-          {mode !== 'reset' && (
             <TextInput
               style={styles.input}
-              placeholder="Jelszó"
-              value={password}
-              onChangeText={setPassword}
-              secureTextEntry
-              autoComplete={mode === 'register' ? 'new-password' : 'password'}
+              placeholder="E-mailben kapott kód"
+              keyboardType="number-pad"
+              value={code}
+              onChangeText={setCode}
             />
-          )}
+          </>
+        )}
 
-          <TouchableOpacity
-            style={[styles.button, loading && { opacity: 0.6 }]}
-            onPress={submit}
-            disabled={loading}
-          >
-            {loading ? (
-              <ActivityIndicator color="#fff" />
-            ) : (
-              <Text style={styles.buttonText}>
-                {mode === 'register'
-                  ? 'Regisztrálok'
-                  : mode === 'reset'
-                  ? 'Jelszó-visszaállító e-mail kérése'
-                  : 'Bejelentkezés'}
-              </Text>
-            )}
-          </TouchableOpacity>
-
-          {mode === 'login' ? (
-            <>
-              <TouchableOpacity
-                style={styles.link}
-                onPress={() => setMode('register')}
-              >
-                <Text style={styles.linkText}>Új fiók regisztrálása</Text>
-              </TouchableOpacity>
-
-              <TouchableOpacity
-                style={styles.link}
-                onPress={() => setMode('reset')}
-              >
-                <Text style={styles.linkText}>Elfelejtettem a jelszavam</Text>
-              </TouchableOpacity>
-            </>
+        <TouchableOpacity
+          style={styles.button}
+          onPress={step === 'email' ? sendCode : activate}
+          disabled={loading}
+        >
+          {loading ? (
+            <ActivityIndicator color="white" />
           ) : (
-            <TouchableOpacity
-              style={styles.link}
-              onPress={() => setMode('login')}
-            >
-              <Text style={styles.linkText}>Vissza a bejelentkezéshez</Text>
-            </TouchableOpacity>
-          )}
-
-          {mode === 'register' && (
-            <Text style={styles.note}>
-              A készlethez a tulajdonos jóváhagyása szükséges.
+            <Text style={styles.buttonText}>
+              {step === 'email'
+                ? 'Aktiváló kód kérése'
+                : 'Telefon aktiválása'}
             </Text>
           )}
-        </View>
-      </ScrollView>
-    </KeyboardAvoidingView>
+        </TouchableOpacity>
+
+        {step === 'code' && (
+          <TouchableOpacity
+            onPress={() => {
+              setCode('');
+              setStep('email');
+            }}
+          >
+            <Text style={styles.link}>
+              Másik e-mail-cím vagy új kód
+            </Text>
+          </TouchableOpacity>
+        )}
+      </View>
+    </View>
   );
 }
 
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#edf4ef'
-  },
-  content: {
-    flexGrow: 1,
+    backgroundColor: '#edf4ef',
     justifyContent: 'center',
     padding: 22
   },
   card: {
-    backgroundColor: '#fff',
-    padding: 24,
-    borderRadius: 18
+    backgroundColor: 'white',
+    borderRadius: 18,
+    padding: 24
   },
-  brand: {
+  title: {
     fontSize: 34,
     fontWeight: 'bold',
     color: '#18342e',
@@ -239,29 +188,24 @@ const styles = StyleSheet.create({
     marginBottom: 14,
     fontSize: 16
   },
+  info: {
+    color: '#527064',
+    marginBottom: 16
+  },
   button: {
     backgroundColor: '#246a4e',
-    padding: 16,
     borderRadius: 10,
+    padding: 16,
     alignItems: 'center'
   },
   buttonText: {
-    color: '#fff',
-    fontWeight: 'bold',
+    color: 'white',
     fontSize: 16,
-    textAlign: 'center'
+    fontWeight: 'bold'
   },
   link: {
-    padding: 12,
-    alignItems: 'center'
-  },
-  linkText: {
     color: '#246a4e',
-    fontWeight: '600'
-  },
-  note: {
     textAlign: 'center',
-    color: '#777',
-    marginTop: 10
+    padding: 16
   }
 });
