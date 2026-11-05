@@ -1,19 +1,28 @@
 
-import React, { useState, useEffect, useCallback, useMemo } from 'react';
+import React, {
+  useState, useEffect, useCallback, useMemo
+} from 'react';
+
 import {
-  View, Text, TextInput, TouchableOpacity, ScrollView,
-  FlatList, Alert, StyleSheet, SafeAreaView,
-  ActivityIndicator, Image, RefreshControl
+  View, Text, TextInput, TouchableOpacity,
+  ScrollView, FlatList, Alert, StyleSheet,
+  SafeAreaView, ActivityIndicator, Image,
+  RefreshControl
 } from 'react-native';
+
 import { CameraView, useCameraPermissions } from 'expo-camera';
+import * as ImagePicker from 'expo-image-picker';
+import * as FileSystem from 'expo-file-system/legacy';
+import { decode } from 'base64-arraybuffer';
 import QRCode from 'react-native-qrcode-svg';
+
 import { supabase } from './supabase';
 import LoginScreen from './LoginScreen';
 
 const C = {
-  green: '#126447',
   dark: '#103e30',
-  light: '#e9f4ed',
+  green: '#126447',
+  pale: '#e9f4ed',
   bg: '#f6f8f6',
   white: '#ffffff',
   gray: '#66756e',
@@ -21,101 +30,82 @@ const C = {
   red: '#b23c36'
 };
 
-const blank = {
-  nev: '', meret: '', marka: '', szin: '',
-  kategoria: '', hely: '', eladasi_ar: '',
-  beszerzesi_ar: '', darabszam: '1',
+const empty = {
+  nev: '',
+  meret: '',
+  marka: '',
+  szin: '',
+  kategoria: '',
+  hely: '',
+  eladasi_ar: '',
+  beszerzesi_ar: '',
+  darabszam: '1',
   megjegyzes: ''
 };
 
-const number = n => Number(n) || 0;
-const money = n =>
-  Math.round(number(n)).toLocaleString('hu-HU') + ' Ft';
+const num = x => Number(x) || 0;
+const money = x =>
+  Math.round(num(x)).toLocaleString('hu-HU') + ' Ft';
 
-function Button({ title, onPress, disabled, secondary, danger }) {
+function Btn({ title, onPress, light, red, disabled }) {
   return (
     <TouchableOpacity
-      disabled={disabled}
       onPress={onPress}
+      disabled={disabled}
       style={[
-        s.button,
-        secondary && s.secondaryButton,
-        danger && { backgroundColor: C.red },
+        S.btn,
+        light && S.btnLight,
+        red && { backgroundColor: C.red },
         disabled && { opacity: 0.5 }
       ]}
     >
       <Text style={[
-        s.buttonText,
-        secondary && { color: C.green }
+        S.btnText,
+        light && { color: C.dark }
       ]}>{title}</Text>
     </TouchableOpacity>
   );
 }
 
-function Input({ label, value, onChangeText, numeric, multiline }) {
+function Field({ label, value, change, numeric, multiline }) {
   return (
-    <View style={{ marginBottom: 13 }}>
-      <Text style={s.label}>{label}</Text>
+    <View style={{ marginBottom: 12 }}>
+      <Text style={S.label}>{label}</Text>
       <TextInput
-        style={[s.input, multiline && { height: 85 }]}
+        style={[S.input, multiline && { height: 85 }]}
         value={value}
-        onChangeText={onChangeText}
+        onChangeText={change}
         keyboardType={numeric ? 'decimal-pad' : 'default'}
         multiline={multiline}
         placeholder={label}
-        placeholderTextColor="#98a49d"
+        placeholderTextColor="#9aa69e"
       />
     </View>
   );
 }
 
-function Tile({ icon, title, value, onPress }) {
+function Card({ item, image, onPress }) {
   return (
-    <TouchableOpacity
-      onPress={onPress}
-      disabled={!onPress}
-      style={s.tile}
-    >
-      <Text style={s.tileIcon}>{icon}</Text>
-      <Text style={s.tileValue}>{value}</Text>
-      <Text style={s.tileTitle}>{title}</Text>
-    </TouchableOpacity>
-  );
-}
-
-function ProductCard({ item, onPress }) {
-  return (
-    <TouchableOpacity style={s.product} onPress={onPress}>
-      <View style={s.productImage}>
-        {item.foto_url ? (
-          <Image
-            source={{ uri: item.foto_url }}
-            style={{ width: 66, height: 75, borderRadius: 10 }}
-          />
+    <TouchableOpacity style={S.product} onPress={onPress}>
+      <View style={S.thumb}>
+        {image ? (
+          <Image source={{ uri: image }} style={S.thumbImage} />
         ) : (
-          <Text style={{ fontSize: 34 }}>👕</Text>
+          <Text style={{ fontSize: 32 }}>👕</Text>
         )}
       </View>
+
       <View style={{ flex: 1 }}>
-        <Text style={s.productName} numberOfLines={1}>
-          {item.nev}
+        <Text style={S.productName}>{item.nev}</Text>
+        <Text style={S.small}>
+          {item.marka || 'Márka nélkül'} • {item.meret || '-'}
         </Text>
-        <Text style={s.muted}>
-          {item.marka || 'Márka nélkül'} • {item.meret || 'Méret nélkül'}
-        </Text>
-        <Text style={s.muted} numberOfLines={1}>
-          {item.kod}
-        </Text>
-        <Text style={s.price}>{money(item.eladasi_ar)}</Text>
+        <Text style={S.small}>{item.kod}</Text>
+        <Text style={S.price}>{money(item.eladasi_ar)}</Text>
       </View>
-      <View style={{ alignItems: 'flex-end', gap: 7 }}>
-        <Text style={[
-          s.stock,
-          number(item.darabszam) === 0 && s.outStock
-        ]}>
-          {item.darabszam} db
-        </Text>
-        <Text style={{ fontSize: 22, color: C.gray }}>›</Text>
+
+      <View style={S.stockTag}>
+        <Text style={S.stockText}>{item.darabszam} db</Text>
       </View>
     </TouchableOpacity>
   );
@@ -123,25 +113,36 @@ function ProductCard({ item, onPress }) {
 
 export default function CloudApp() {
   const [employee, setEmployee] = useState(null);
-  const [initializing, setInitializing] = useState(true);
+  const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
+
   const [items, setItems] = useState([]);
   const [sales, setSales] = useState([]);
+  const [photos, setPhotos] = useState({});
+
   const [tab, setTab] = useState('home');
   const [screen, setScreen] = useState('');
-  const [query, setQuery] = useState('');
-  const [filter, setFilter] = useState('all');
-  const [form, setForm] = useState(blank);
   const [selectedId, setSelectedId] = useState(null);
   const [editingId, setEditingId] = useState(null);
-  const [scanLocked, setScanLocked] = useState(false);
-  const [, requestPermission] = useCameraPermissions();
 
+  const [form, setForm] = useState({ ...empty });
+  const [localPhoto, setLocalPhoto] = useState(null);
+  const [query, setQuery] = useState('');
+  const [filter, setFilter] = useState('all');
+  const [scanLocked, setScanLocked] = useState(false);
+
+  const [adjustAmount, setAdjustAmount] = useState('1');
+  const [adjustReason, setAdjustReason] = useState('Készletkorrekció');
+
+  const [, requestCamera] = useCameraPermissions();
+
+  const owner = employee?.szerepkor === 'tulajdonos';
   const selected = items.find(x => x.id === selectedId);
 
-  const loadData = useCallback(async (showError = true) => {
+  const refresh = useCallback(async (showError = true) => {
     setRefreshing(true);
+
     try {
       const [r, e] = await Promise.all([
         supabase.from('ruhak').select('*')
@@ -157,13 +158,15 @@ export default function CloudApp() {
       setItems(r.data || []);
       setSales(e.data || []);
     } catch (err) {
-      if (showError) Alert.alert('Felhőhiba', err.message);
+      if (showError) {
+        Alert.alert('Felhőhiba', err.message);
+      }
     } finally {
       setRefreshing(false);
     }
   }, []);
 
-  const checkUser = useCallback(async user => {
+  const identify = useCallback(async user => {
     try {
       if (!user) {
         setEmployee(null);
@@ -188,10 +191,10 @@ export default function CloudApp() {
 
       setEmployee(data);
     } catch (err) {
-      Alert.alert('Azonosítási hiba', err.message);
+      Alert.alert('Belépési hiba', err.message);
       setEmployee(null);
     } finally {
-      setInitializing(false);
+      setLoading(false);
     }
   }, []);
 
@@ -199,9 +202,9 @@ export default function CloudApp() {
     let active = true;
 
     supabase.auth.getUser().then(({ data }) => {
-      if (active) checkUser(data?.user);
+      if (active) identify(data?.user);
     }).catch(() => {
-      if (active) setInitializing(false);
+      if (active) setLoading(false);
     });
 
     const { data: listener } = supabase.auth.onAuthStateChange(
@@ -212,12 +215,12 @@ export default function CloudApp() {
           setEmployee(null);
           setItems([]);
           setSales([]);
+          setPhotos({});
           setScreen('');
-          setTab('home');
         }
 
         if (event === 'SIGNED_IN' && session?.user) {
-          checkUser(session.user);
+          identify(session.user);
         }
       }
     );
@@ -226,72 +229,100 @@ export default function CloudApp() {
       active = false;
       listener.subscription.unsubscribe();
     };
-  }, [checkUser]);
+  }, [identify]);
 
   useEffect(() => {
-    if (employee?.id) loadData();
-  }, [employee?.id, loadData]);
+    if (employee?.id) refresh();
+  }, [employee?.id, refresh]);
+
+  useEffect(() => {
+    if (!employee?.id || items.length === 0) return;
+
+    let cancelled = false;
+
+    async function loadPhotos() {
+      const next = {};
+
+      await Promise.all(items.map(async item => {
+        if (!item.foto_url) return;
+
+        if (item.foto_url.startsWith('https://')) {
+          next[item.id] = item.foto_url;
+          return;
+        }
+
+        const { data, error } = await supabase.storage
+          .from('ruhatar-kepek')
+          .createSignedUrl(item.foto_url, 3600);
+
+        if (!error && data?.signedUrl) {
+          next[item.id] = data.signedUrl;
+        }
+      }));
+
+      if (!cancelled) setPhotos(next);
+    }
+
+    loadPhotos();
+
+    return () => { cancelled = true; };
+  }, [items, employee?.id]);
 
   const stats = useMemo(() => {
-    const stock = items.reduce(
-      (a, x) => a + number(x.darabszam), 0
-    );
-
-    const stockValue = items.reduce(
-      (a, x) =>
-        a + number(x.darabszam) * number(x.eladasi_ar), 0
-    );
-
     const today = new Date().toDateString();
-
     const todaySales = sales.filter(x =>
       x.eladva &&
       new Date(x.eladva).toDateString() === today
     );
 
     return {
-      stock,
-      kinds: items.length,
-      low: items.filter(x => number(x.darabszam) <= 2).length,
-      stockValue,
+      count: items.reduce((a, x) => a + num(x.darabszam), 0),
+      types: items.length,
+      low: items.filter(x => num(x.darabszam) <= 2).length,
+      value: items.reduce(
+        (a, x) => a + num(x.darabszam) * num(x.eladasi_ar), 0
+      ),
       todayCount: todaySales.reduce(
-        (a, x) => a + number(x.darabszam), 0
+        (a, x) => a + num(x.darabszam), 0
       ),
-      todayRevenue: todaySales.reduce(
-        (a, x) => a + number(x.osszeg), 0
+      todayMoney: todaySales.reduce(
+        (a, x) => a + num(x.osszeg), 0
       ),
-      totalRevenue: sales.reduce(
-        (a, x) => a + number(x.osszeg), 0
+      revenue: sales.reduce(
+        (a, x) => a + num(x.osszeg), 0
       )
     };
   }, [items, sales]);
 
   const filtered = useMemo(() => {
-    const q = query.trim().toLowerCase();
+    const q = query.toLowerCase().trim();
 
     return items.filter(x => {
       const text = [
-        x.nev, x.kod, x.marka, x.meret,
+        x.nev, x.kod, x.meret, x.marka,
         x.szin, x.kategoria, x.hely
       ].join(' ').toLowerCase();
 
       if (q && !text.includes(q)) return false;
-      if (filter === 'stock' && number(x.darabszam) < 1) return false;
-      if (filter === 'low' && number(x.darabszam) > 2) return false;
-      if (filter === 'empty' && number(x.darabszam) !== 0) return false;
-
+      if (filter === 'stock' && num(x.darabszam) < 1) return false;
+      if (filter === 'low' && num(x.darabszam) > 2) return false;
+      if (filter === 'empty' && num(x.darabszam) !== 0) return false;
       return true;
     });
   }, [items, query, filter]);
 
   function startAdd() {
     setEditingId(null);
-    setForm({ ...blank });
-    setScreen('add');
+    setForm({ ...empty });
+    setLocalPhoto(null);
+    setScreen('form');
   }
 
   function startEdit(item) {
     setEditingId(item.id);
+    setSelectedId(item.id);
+    setLocalPhoto(null);
+
     setForm({
       nev: item.nev || '',
       meret: item.meret || '',
@@ -304,37 +335,105 @@ export default function CloudApp() {
       darabszam: String(item.darabszam ?? 0),
       megjegyzes: item.megjegyzes || ''
     });
-    setScreen('edit');
+
+    setScreen('form');
+  }
+
+  async function choosePhoto(camera) {
+    try {
+      let result;
+
+      if (camera) {
+        const p = await ImagePicker.requestCameraPermissionsAsync();
+
+        if (!p.granted) {
+          Alert.alert('Engedély szükséges', 'Engedélyezd a kamerát.');
+          return;
+        }
+
+        result = await ImagePicker.launchCameraAsync({
+          mediaTypes: ['images'],
+          quality: 0.6,
+          allowsEditing: true
+        });
+      } else {
+        const p =
+          await ImagePicker.requestMediaLibraryPermissionsAsync();
+
+        if (!p.granted) {
+          Alert.alert('Engedély szükséges', 'Engedélyezd a galériát.');
+          return;
+        }
+
+        result = await ImagePicker.launchImageLibraryAsync({
+          mediaTypes: ['images'],
+          quality: 0.6,
+          allowsEditing: true
+        });
+      }
+
+      if (!result.canceled && result.assets?.[0]) {
+        setLocalPhoto(result.assets[0].uri);
+      }
+    } catch (err) {
+      Alert.alert('Fényképhiba', err.message);
+    }
+  }
+
+  async function uploadPhoto(uri) {
+    const { data: userData, error: userError } =
+      await supabase.auth.getUser();
+
+    if (userError) throw userError;
+
+    const uid = userData?.user?.id;
+    if (!uid) throw new Error('Nincs aktív készülékkapcsolat.');
+
+    const info = await FileSystem.getInfoAsync(uri);
+
+    if (info.exists && info.size > 5 * 1024 * 1024) {
+      throw new Error('A fénykép túl nagy. Maximum 5 MB.');
+    }
+
+    const base64 = await FileSystem.readAsStringAsync(uri, {
+      encoding: FileSystem.EncodingType.Base64
+    });
+
+    const path = uid + '/' + Date.now() + '-' +
+      Math.random().toString(36).slice(2, 10) + '.jpg';
+
+    const { error } = await supabase.storage
+      .from('ruhatar-kepek')
+      .upload(path, decode(base64), {
+        contentType: 'image/jpeg',
+        upsert: false
+      });
+
+    if (error) throw error;
+    return path;
   }
 
   async function saveItem() {
     if (busy) return;
 
-    const nev = form.nev.trim();
-    const count = Number(form.darabszam);
+    const name = form.nev.trim();
     const price = Number(form.eladasi_ar.replace(',', '.'));
     const cost = form.beszerzesi_ar.trim()
       ? Number(form.beszerzesi_ar.replace(',', '.'))
       : null;
+    const count = Number(form.darabszam);
 
-    if (!nev || !form.eladasi_ar.trim()) {
-      Alert.alert(
-        'Hiányzó adat',
-        'A ruha neve és az eladási ár kötelező.'
-      );
+    if (!name || !form.eladasi_ar.trim()) {
+      Alert.alert('Hiányzó adat', 'Név és eladási ár kötelező.');
       return;
     }
 
     if (
-      (!editingId && (!Number.isInteger(count) || count < 0)) ||
-      !Number.isFinite(price) ||
-      price < 0 ||
-      (cost !== null && (!Number.isFinite(cost) || cost < 0))
+      !Number.isFinite(price) || price < 0 ||
+      (cost !== null && (!Number.isFinite(cost) || cost < 0)) ||
+      (!editingId && (!Number.isInteger(count) || count < 0))
     ) {
-      Alert.alert(
-        'Hibás adat',
-        'Ellenőrizd az árakat és a darabszámot.'
-      );
+      Alert.alert('Hibás adat', 'Ellenőrizd az árakat és a darabszámot.');
       return;
     }
 
@@ -342,7 +441,7 @@ export default function CloudApp() {
 
     try {
       const fields = {
-        nev,
+        nev: name,
         meret: form.meret.trim(),
         marka: form.marka.trim(),
         szin: form.szin.trim(),
@@ -353,48 +452,43 @@ export default function CloudApp() {
         megjegyzes: form.megjegyzes.trim()
       };
 
-      let error;
+      if (localPhoto) {
+        fields.foto_url = await uploadPhoto(localPhoto);
+      }
 
       if (editingId) {
-        const result = await supabase
+        const { data, error } = await supabase
           .from('ruhak')
           .update(fields)
-          .eq('id', editingId);
+          .eq('id', editingId)
+          .select('id')
+          .single();
 
-        error = result.error;
+        if (error) throw error;
+        if (!data) throw new Error('A módosítás nem sikerült.');
       } else {
         const kod = 'R-' +
           Date.now().toString(36).toUpperCase() + '-' +
-          Math.random().toString(36).slice(2, 9).toUpperCase();
+          Math.random().toString(36).slice(2, 10).toUpperCase();
 
-        const result = await supabase
-          .from('ruhak')
-          .insert({
-            ...fields,
-            kod,
-            darabszam: count
-          });
+        const { error } = await supabase.from('ruhak').insert({
+          ...fields,
+          kod,
+          darabszam: count
+        });
 
-        error = result.error;
+        if (error) throw error;
       }
 
-      if (error) throw error;
-
-      const wasEditing = !!editingId;
-
-      setEditingId(null);
-      setForm({ ...blank });
       setScreen('');
       setTab('stock');
+      setEditingId(null);
+      setLocalPhoto(null);
+      setForm({ ...empty });
 
-      await loadData();
+      await refresh();
 
-      Alert.alert(
-        'Sikeres mentés',
-        wasEditing
-          ? 'A ruha adatai frissültek a felhőben.'
-          : 'Az új ruha bekerült a közös készletbe.'
-      );
+      Alert.alert('Sikeres mentés', 'A felhős készlet frissült.');
     } catch (err) {
       Alert.alert('Mentési hiba', err.message);
     } finally {
@@ -402,7 +496,7 @@ export default function CloudApp() {
     }
   }
 
-  async function sellItem(item) {
+  async function sell(item) {
     if (busy) return;
 
     setBusy(true);
@@ -411,20 +505,16 @@ export default function CloudApp() {
       const { error } = await supabase.rpc('ruha_eladasa', {
         p_ruha_id: item.id,
         p_darabszam: 1,
-        p_osszeg: number(item.eladasi_ar)
+        p_osszeg: num(item.eladasi_ar)
       });
 
       if (error) throw error;
 
-      await loadData();
-
+      await refresh();
       setScreen('');
       setTab('sales');
 
-      Alert.alert(
-        'Eladás rögzítve',
-        'A készlet 1 darabbal csökkent.'
-      );
+      Alert.alert('Sikeres eladás', '1 db levonva a készletből.');
     } catch (err) {
       Alert.alert('Eladási hiba', err.message);
     } finally {
@@ -434,26 +524,66 @@ export default function CloudApp() {
 
   function confirmSale(item) {
     Alert.alert(
-      'Eladás megerősítése',
-      `${item.nev}\n1 db • ${money(item.eladasi_ar)}`,
+      'Eladás rögzítése',
+      item.nev + '\n1 db • ' + money(item.eladasi_ar),
+      [
+        { text: 'Mégse', style: 'cancel' },
+        { text: 'Eladva', onPress: () => sell(item) }
+      ]
+    );
+  }
+
+  async function adjust(sign) {
+    if (!selected || !owner || busy) return;
+
+    const amount = Number(adjustAmount);
+
+    if (!Number.isInteger(amount) || amount < 1 || amount > 100000) {
+      Alert.alert('Hibás mennyiség', 'Adj meg pozitív egész számot.');
+      return;
+    }
+
+    Alert.alert(
+      'Készlet módosítása',
+      `${selected.nev}\n${sign > 0 ? '+' : '-'}${amount} db`,
       [
         { text: 'Mégse', style: 'cancel' },
         {
-          text: 'Eladva',
-          onPress: () => sellItem(item)
+          text: 'Megerősítés',
+          onPress: async () => {
+            setBusy(true);
+
+            try {
+              const { error } = await supabase.rpc(
+                'keszlet_modositas',
+                {
+                  p_ruha_id: selected.id,
+                  p_valtozas: sign * amount,
+                  p_indok: adjustReason.trim() || 'Készletkorrekció'
+                }
+              );
+
+              if (error) throw error;
+
+              await refresh();
+              setScreen('detail');
+              Alert.alert('Kész', 'A készlet módosult.');
+            } catch (err) {
+              Alert.alert('Hiba', err.message);
+            } finally {
+              setBusy(false);
+            }
+          }
         }
       ]
     );
   }
 
   async function startScan() {
-    const p = await requestPermission();
+    const p = await requestCamera();
 
     if (!p.granted) {
-      Alert.alert(
-        'Kameraengedély',
-        'Engedélyezd a kamera használatát.'
-      );
+      Alert.alert('Kameraengedély', 'Engedélyezd a kamerát.');
       return;
     }
 
@@ -463,308 +593,60 @@ export default function CloudApp() {
 
   async function onScan({ data }) {
     if (scanLocked) return;
-
     setScanLocked(true);
 
-    let found = items.find(x => x.kod === data);
+    try {
+      let item = items.find(x => x.kod === data);
 
-    if (!found) {
-      const { data: result, error } = await supabase
-        .from('ruhak')
-        .select('*')
-        .eq('kod', data)
-        .maybeSingle();
+      if (!item) {
+        const result = await supabase.from('ruhak')
+          .select('*').eq('kod', data).maybeSingle();
 
-      if (error) {
-        Alert.alert('Hiba', error.message);
+        if (result.error) throw result.error;
+        item = result.data;
+      }
+
+      if (!item) {
+        Alert.alert('Nem található', 'Ismeretlen QR-kód.');
         setScreen('');
         return;
       }
 
-      found = result;
-    }
+      setSelectedId(item.id);
 
-    if (found) {
-      setSelectedId(found.id);
-
-      if (!items.some(x => x.id === found.id)) {
-        await loadData();
+      if (!items.some(x => x.id === item.id)) {
+        await refresh();
       }
 
       setScreen('detail');
-    } else {
-      Alert.alert(
-        'Nem található',
-        'A kódhoz nincs ruha a készletben.'
-      );
+    } catch (err) {
+      Alert.alert('QR-hiba', err.message);
       setScreen('');
     }
   }
 
-  function openItem(item) {
-    setSelectedId(item.id);
-    setScreen('detail');
-  }
-
-  function goTo(next) {
+  function navigate(next) {
     setScreen('');
     setTab(next);
-
-    if (next === 'sales' || next === 'stats') {
-      loadData(false);
-    }
+    refresh(false);
   }
 
-  const isOwner = employee?.szerepkor === 'tulajdonos';
-
-  if (initializing) {
-    return (
-      <View style={s.center}>
-        <ActivityIndicator size="large" color={C.green} />
-        <Text style={s.muted}>Ruhatár betöltése...</Text>
-      </View>
-    );
-  }
-
-  if (!employee) {
-    return (
-      <LoginScreen
-        onLogin={async () => {
-          setInitializing(true);
-          const { data } = await supabase.auth.getUser();
-          await checkUser(data?.user);
-        }}
-      />
-    );
-  }
-
-  if (screen === 'scan') {
-    return (
-      <SafeAreaView style={s.page}>
-        <Text style={s.heading}>QR-kód beolvasása</Text>
-
-        <View style={{
-          flex: 1,
-          borderRadius: 18,
-          overflow: 'hidden'
-        }}>
-          <CameraView
-            style={{ flex: 1 }}
-            facing="back"
-            barcodeScannerSettings={{
-              barcodeTypes: ['qr']
-            }}
-            onBarcodeScanned={
-              scanLocked ? undefined : onScan
-            }
-          />
-        </View>
-
-        <Button
-          title="Vissza"
-          secondary
-          onPress={() => setScreen('')}
-        />
-      </SafeAreaView>
-    );
-  }
-
-  if (screen === 'add' || screen === 'edit') {
-    const editing = screen === 'edit';
-
-    return (
-      <SafeAreaView style={s.page}>
-        <ScrollView keyboardShouldPersistTaps="handled">
-          <Text style={s.heading}>
-            {editing
-              ? 'Ruha szerkesztése'
-              : 'Új ruha hozzáadása'}
-          </Text>
-
-          <Text style={s.muted}>
-            {editing
-              ? 'A módosítások a közös felhős készletbe kerülnek.'
-              : 'Az új ruha minden jogosult telefonon megjelenik.'}
-          </Text>
-
-          <View style={[s.panel, { marginTop: 16 }]}>
-            {[
-              ['nev', 'Ruha neve *'],
-              ['kategoria', 'Kategória'],
-              ['marka', 'Márka'],
-              ['meret', 'Méret'],
-              ['szin', 'Szín'],
-              ['hely', 'Raktári hely'],
-              ['eladasi_ar', 'Eladási ár (Ft) *'],
-              ['beszerzesi_ar', 'Beszerzési ár (Ft)'],
-              ...(!editing
-                ? [['darabszam', 'Darabszám']]
-                : []),
-              ['megjegyzes', 'Megjegyzés']
-            ].map(([key, label]) => (
-              <Input
-                key={key}
-                label={label}
-                value={form[key]}
-                numeric={[
-                  'eladasi_ar',
-                  'beszerzesi_ar',
-                  'darabszam'
-                ].includes(key)}
-                multiline={key === 'megjegyzes'}
-                onChangeText={v =>
-                  setForm(old => ({
-                    ...old,
-                    [key]: v
-                  }))
-                }
-              />
-            ))}
-
-            {editing && (
-              <Text style={[s.muted, { marginBottom: 14 }]}>
-                A darabszámot itt nem módosítjuk.
-                Az eladások külön készletmozgásként
-                kerülnek rögzítésre.
-              </Text>
-            )}
-
-            <Button
-              title={
-                busy
-                  ? 'Mentés folyamatban...'
-                  : editing
-                    ? '✓ Módosítások mentése'
-                    : '✓ Mentés a felhőbe'
-              }
-              disabled={busy}
-              onPress={saveItem}
-            />
-
-            <Button
-              title="Mégse"
-              secondary
-              onPress={() => {
-                setEditingId(null);
-                setScreen(editing ? 'detail' : '');
-              }}
-            />
-          </View>
-        </ScrollView>
-      </SafeAreaView>
-    );
-  }
-
-  if (screen === 'detail') {
-    if (!selected) {
-      return (
-        <SafeAreaView style={s.page}>
-          <Text style={s.heading}>Ruha nem található</Text>
-          <Button
-            title="Vissza"
-            onPress={() => setScreen('')}
-          />
-        </SafeAreaView>
-      );
-    }
-
-    return (
-      <SafeAreaView style={s.page}>
-        <ScrollView>
-          <Text style={s.heading}>{selected.nev}</Text>
-          <Text style={s.muted}>{selected.kod}</Text>
-
-          {selected.foto_url ? (
-            <Image
-              source={{ uri: selected.foto_url }}
-              style={s.detailPhoto}
-              resizeMode="contain"
-            />
-          ) : null}
-
-          <View style={s.qrPanel}>
-            <QRCode value={selected.kod} size={210} />
-            <Text style={s.code}>{selected.kod}</Text>
-          </View>
-
-          <View style={s.panel}>
-            {[
-              ['Márka', selected.marka],
-              ['Kategória', selected.kategoria],
-              ['Méret', selected.meret],
-              ['Szín', selected.szin],
-              ['Raktári hely', selected.hely],
-              ['Készleten', `${selected.darabszam} db`],
-              ['Eladási ár', money(selected.eladasi_ar)],
-              ['Megjegyzés', selected.megjegyzes]
-            ].map(([key, val]) => (
-              <View key={key} style={s.detailRow}>
-                <Text style={s.muted}>{key}</Text>
-                <Text style={s.detailValue}>
-                  {val || '-'}
-                </Text>
-              </View>
-            ))}
-          </View>
-
-          <Button
-            title="✏️ Ruha adatainak szerkesztése"
-            secondary
-            onPress={() => startEdit(selected)}
-          />
-
-          <Button
-            title={
-              busy
-                ? 'Feldolgozás...'
-                : '🛒 1 db eladása'
-            }
-            onPress={() => confirmSale(selected)}
-            disabled={
-              busy ||
-              number(selected.darabszam) < 1
-            }
-          />
-
-          <Button
-            title="Készlet frissítése"
-            secondary
-            onPress={() => loadData()}
-          />
-
-          <Button
-            title="Vissza"
-            secondary
-            onPress={() => setScreen('')}
-          />
-        </ScrollView>
-      </SafeAreaView>
-    );
-  }
-
-  const searchBar = (
+  const search = (
     <>
-      <View style={s.searchWrap}>
-        <Text style={{ fontSize: 20 }}>⌕</Text>
-
+      <View style={S.searchRow}>
         <TextInput
-          placeholder="Keresés: név, márka, méret, kód..."
-          placeholderTextColor="#84938a"
-          style={s.search}
+          style={S.search}
           value={query}
           onChangeText={setQuery}
+          placeholder="Keresés: név, márka, méret, kód..."
+          placeholderTextColor="#8b9a90"
         />
-
         <TouchableOpacity onPress={startScan}>
-          <Text style={{ fontSize: 23 }}>▦</Text>
+          <Text style={{ fontSize: 25 }}>▦</Text>
         </TouchableOpacity>
       </View>
 
-      <ScrollView
-        horizontal
-        showsHorizontalScrollIndicator={false}
-        style={{ marginBottom: 12 }}
-      >
+      <ScrollView horizontal showsHorizontalScrollIndicator={false}>
         {[
           ['all', 'Összes'],
           ['stock', 'Készleten'],
@@ -775,23 +657,258 @@ export default function CloudApp() {
             key={key}
             onPress={() => setFilter(key)}
             style={[
-              s.chip,
-              filter === key && s.chipActive
+              S.chip,
+              filter === key && { backgroundColor: C.green }
             ]}
           >
             <Text style={{
-              color: filter === key
-                ? 'white'
-                : C.dark,
-              fontWeight: '600'
-            }}>
-              {label}
-            </Text>
+              color: filter === key ? 'white' : C.dark,
+              fontWeight: '700'
+            }}>{label}</Text>
           </TouchableOpacity>
         ))}
       </ScrollView>
     </>
   );
+
+  if (loading) {
+    return (
+      <View style={S.center}>
+        <ActivityIndicator size="large" color={C.green} />
+        <Text>Ruhatár betöltése...</Text>
+      </View>
+    );
+  }
+
+  if (!employee) {
+    return (
+      <LoginScreen onLogin={async () => {
+        setLoading(true);
+        const { data } = await supabase.auth.getUser();
+        await identify(data?.user);
+      }} />
+    );
+  }
+
+  if (screen === 'scan') {
+    return (
+      <SafeAreaView style={S.page}>
+        <Text style={S.heading}>QR-kód beolvasása</Text>
+
+        <CameraView
+          style={{ flex: 1, borderRadius: 16, overflow: 'hidden' }}
+          facing="back"
+          barcodeScannerSettings={{ barcodeTypes: ['qr'] }}
+          onBarcodeScanned={scanLocked ? undefined : onScan}
+        />
+
+        <Btn title="Vissza" light onPress={() => setScreen('')} />
+      </SafeAreaView>
+    );
+  }
+
+  if (screen === 'form') {
+    return (
+      <SafeAreaView style={S.page}>
+        <ScrollView keyboardShouldPersistTaps="handled">
+          <Text style={S.heading}>
+            {editingId ? 'Ruha szerkesztése' : 'Új ruha'}
+          </Text>
+
+          <View style={S.panel}>
+            <Text style={S.label}>Ruha fényképe</Text>
+
+            {(localPhoto ||
+              (editingId && photos[editingId])) && (
+              <Image
+                source={{
+                  uri: localPhoto || photos[editingId]
+                }}
+                style={S.formImage}
+                resizeMode="contain"
+              />
+            )}
+
+            <Btn
+              title="📷 Fényképezés"
+              light
+              onPress={() => choosePhoto(true)}
+            />
+
+            <Btn
+              title="🖼️ Kép a galériából"
+              light
+              onPress={() => choosePhoto(false)}
+            />
+
+            {[
+              ['nev', 'Ruha neve *'],
+              ['kategoria', 'Kategória'],
+              ['marka', 'Márka'],
+              ['meret', 'Méret'],
+              ['szin', 'Szín'],
+              ['hely', 'Raktári hely'],
+              ['eladasi_ar', 'Eladási ár (Ft) *'],
+              ['beszerzesi_ar', 'Beszerzési ár (Ft)'],
+              ...(!editingId ? [['darabszam', 'Darabszám']] : []),
+              ['megjegyzes', 'Megjegyzés']
+            ].map(([key, label]) => (
+              <Field
+                key={key}
+                label={label}
+                value={form[key]}
+                change={value => setForm(old => ({
+                  ...old,
+                  [key]: value
+                }))}
+                numeric={[
+                  'eladasi_ar', 'beszerzesi_ar', 'darabszam'
+                ].includes(key)}
+                multiline={key === 'megjegyzes'}
+              />
+            ))}
+
+            <Btn
+              title={busy ? 'Mentés...' : '✓ Mentés a felhőbe'}
+              disabled={busy}
+              onPress={saveItem}
+            />
+
+            <Btn
+              title="Mégse"
+              light
+              onPress={() => setScreen(editingId ? 'detail' : '')}
+            />
+          </View>
+        </ScrollView>
+      </SafeAreaView>
+    );
+  }
+
+  if (screen === 'adjust' && selected) {
+    return (
+      <SafeAreaView style={S.page}>
+        <ScrollView>
+          <Text style={S.heading}>Készletkorrekció</Text>
+
+          <View style={S.panel}>
+            <Text style={S.productName}>{selected.nev}</Text>
+            <Text style={S.small}>
+              Jelenleg: {selected.darabszam} db
+            </Text>
+
+            <Field
+              label="Mennyiség"
+              value={adjustAmount}
+              numeric
+              change={setAdjustAmount}
+            />
+
+            <Field
+              label="Indok"
+              value={adjustReason}
+              change={setAdjustReason}
+            />
+
+            <Btn
+              title="+ Készlet növelése"
+              disabled={busy}
+              onPress={() => adjust(1)}
+            />
+
+            <Btn
+              title="- Készlet csökkentése"
+              red
+              disabled={busy}
+              onPress={() => adjust(-1)}
+            />
+          </View>
+
+          <Btn
+            title="Vissza"
+            light
+            onPress={() => setScreen('detail')}
+          />
+        </ScrollView>
+      </SafeAreaView>
+    );
+  }
+
+  if (screen === 'detail') {
+    if (!selected) {
+      return (
+        <SafeAreaView style={S.page}>
+          <Text>Nem található a ruha.</Text>
+          <Btn title="Vissza" onPress={() => setScreen('')} />
+        </SafeAreaView>
+      );
+    }
+
+    return (
+      <SafeAreaView style={S.page}>
+        <ScrollView>
+          <Text style={S.heading}>{selected.nev}</Text>
+          <Text style={S.small}>{selected.kod}</Text>
+
+          {photos[selected.id] && (
+            <Image
+              source={{ uri: photos[selected.id] }}
+              style={S.detailImage}
+              resizeMode="contain"
+            />
+          )}
+
+          <View style={S.qr}>
+            <QRCode value={selected.kod} size={190} />
+            <Text style={S.small}>{selected.kod}</Text>
+          </View>
+
+          <View style={S.panel}>
+            {[
+              ['Márka', selected.marka],
+              ['Kategória', selected.kategoria],
+              ['Méret', selected.meret],
+              ['Szín', selected.szin],
+              ['Hely', selected.hely],
+              ['Darabszám', selected.darabszam + ' db'],
+              ['Eladási ár', money(selected.eladasi_ar)],
+              ['Megjegyzés', selected.megjegyzes]
+            ].map(([label, value]) => (
+              <View key={label} style={S.detailRow}>
+                <Text style={S.small}>{label}</Text>
+                <Text style={S.detailValue}>{value || '-'}</Text>
+              </View>
+            ))}
+          </View>
+
+          <Btn
+            title="✏️ Ruha szerkesztése"
+            light
+            onPress={() => startEdit(selected)}
+          />
+
+          {owner && (
+            <Btn
+              title="📦 Készlet módosítása"
+              light
+              onPress={() => {
+                setAdjustAmount('1');
+                setScreen('adjust');
+              }}
+            />
+          )}
+
+          <Btn
+            title="🛒 1 db eladása"
+            disabled={busy || num(selected.darabszam) < 1}
+            onPress={() => confirmSale(selected)}
+          />
+
+          <Btn title="Vissza" light onPress={() => setScreen('')} />
+        </ScrollView>
+      </SafeAreaView>
+    );
+  }
 
   let content;
 
@@ -799,149 +916,122 @@ export default function CloudApp() {
     content = (
       <ScrollView
         refreshControl={
-          <RefreshControl
-            refreshing={refreshing}
-            onRefresh={loadData}
-          />
+          <RefreshControl refreshing={refreshing} onRefresh={refresh} />
         }
       >
-        <View style={s.hero}>
-          <Text style={s.heroTitle}>Ruhatár</Text>
-
-          <Text style={s.heroSub}>
+        <View style={S.hero}>
+          <Text style={S.heroTitle}>Ruhatár</Text>
+          <Text style={S.heroSub}>
             Készletkezelés • Értékesítés • Statisztika
           </Text>
-
-          <Text style={s.heroWelcome}>
+          <Text style={S.welcome}>
             Üdvözlünk, {employee.nev || 'Dolgozó'}!
           </Text>
         </View>
 
-        <View style={s.tiles}>
-          <Tile
-            icon="👕"
-            value={`${stats.stock} db`}
-            title="Összes készlet"
-            onPress={() => goTo('stock')}
-          />
-          <Tile
-            icon="🏷️"
-            value={stats.kinds}
-            title="Termékfajta"
-            onPress={() => goTo('stock')}
-          />
-          <Tile
-            icon="🛒"
-            value={`${stats.todayCount} db`}
-            title="Mai eladás"
-            onPress={() => goTo('sales')}
-          />
-          <Tile
-            icon="💰"
-            value={money(stats.todayRevenue)}
-            title="Mai bevétel"
-            onPress={() => goTo('stats')}
-          />
+        <View style={S.tiles}>
+          {[
+            ['👕', stats.count + ' db', 'Készlet'],
+            ['🏷️', stats.types, 'Termékfajta'],
+            ['🛒', stats.todayCount + ' db', 'Mai eladás'],
+            ['💰', money(stats.todayMoney), 'Mai bevétel']
+          ].map(([icon, value, label]) => (
+            <View key={label} style={S.tile}>
+              <Text style={S.tileIcon}>{icon}</Text>
+              <Text style={S.tileValue}>{value}</Text>
+              <Text style={S.tileLabel}>{label}</Text>
+            </View>
+          ))}
         </View>
 
-        {searchBar}
+        {search}
 
-        <Text style={s.sectionTitle}>
-          Gyors műveletek
-        </Text>
+        <Text style={S.section}>Gyors műveletek</Text>
 
-        <View style={s.actions}>
+        <View style={S.actions}>
           {[
             ['＋', 'Új ruha', startAdd],
             ['▦', 'QR beolvasás', startScan],
-            ['👕', 'Készlet', () => goTo('stock')],
-            ['🛒', 'Eladások', () => goTo('sales')],
-            ['📊', 'Statisztika', () => goTo('stats')],
-            ['⚙️', 'Továbbiak', () => goTo('more')]
-          ].map(([icon, label, fn]) => (
+            ['👕', 'Készlet', () => navigate('stock')],
+            ['🛒', 'Eladások', () => navigate('sales')],
+            ['📊', 'Statisztika', () => navigate('stats')],
+            ['⚙️', 'Továbbiak', () => navigate('more')]
+          ].map(([icon, label, action]) => (
             <TouchableOpacity
               key={label}
-              style={s.action}
-              onPress={fn}
+              style={S.action}
+              onPress={action}
             >
-              <Text style={s.actionIcon}>{icon}</Text>
-              <Text style={s.actionLabel}>{label}</Text>
+              <Text style={S.actionIcon}>{icon}</Text>
+              <Text style={S.actionLabel}>{label}</Text>
             </TouchableOpacity>
           ))}
         </View>
 
-        <Text style={s.sectionTitle}>
-          Legutóbbi ruhák
-        </Text>
+        <Text style={S.section}>Legutóbbi ruhák</Text>
 
         {filtered.slice(0, 6).map(item => (
-          <ProductCard
+          <Card
             key={item.id}
             item={item}
-            onPress={() => openItem(item)}
+            image={photos[item.id]}
+            onPress={() => {
+              setSelectedId(item.id);
+              setScreen('detail');
+            }}
           />
         ))}
 
-        {filtered.length === 0 && (
-          <Text style={s.empty}>
-            Nincs megjeleníthető ruha.
-          </Text>
-        )}
-
-        <Button
-          title="Teljes készlet megnyitása"
-          secondary
-          onPress={() => goTo('stock')}
+        <Btn
+          title="Teljes készlet"
+          light
+          onPress={() => navigate('stock')}
         />
       </ScrollView>
     );
   } else if (tab === 'stock') {
     content = (
       <View style={{ flex: 1 }}>
-        <Text style={s.heading}>Ruhakészlet</Text>
-
-        <Text style={s.muted}>
-          {filtered.length} termék • {stats.stock} db összesen
+        <Text style={S.heading}>Ruhakészlet</Text>
+        <Text style={S.small}>
+          {stats.types} termék • {stats.count} db
         </Text>
 
-        <View style={{ height: 14 }} />
-
-        {searchBar}
+        {search}
 
         <FlatList
           data={filtered}
           keyExtractor={x => String(x.id)}
           refreshing={refreshing}
-          onRefresh={loadData}
+          onRefresh={refresh}
+          ListEmptyComponent={
+            <Text style={S.empty}>Nincs találat.</Text>
+          }
           renderItem={({ item }) => (
-            <ProductCard
+            <Card
               item={item}
-              onPress={() => openItem(item)}
+              image={photos[item.id]}
+              onPress={() => {
+                setSelectedId(item.id);
+                setScreen('detail');
+              }}
             />
           )}
-          ListEmptyComponent={
-            <Text style={s.empty}>Nincs találat.</Text>
-          }
         />
 
-        <Button
-          title="+ Új ruha hozzáadása"
-          onPress={startAdd}
-        />
+        <Btn title="+ Új ruha" onPress={startAdd} />
       </View>
     );
   } else if (tab === 'sales') {
     content = (
       <View style={{ flex: 1 }}>
-        <Text style={s.heading}>Eladások</Text>
+        <Text style={S.heading}>Eladások</Text>
 
-        <View style={s.panel}>
-          <Text style={s.muted}>Mai bevétel</Text>
-          <Text style={s.bigNumber}>
-            {money(stats.todayRevenue)}
-          </Text>
-          <Text style={s.muted}>
-            Ma eladott darab: {stats.todayCount}
+        <View style={S.panel}>
+          <Text style={S.small}>Mai bevétel</Text>
+          <Text style={S.big}>{money(stats.todayMoney)}</Text>
+          <Text style={S.small}>
+            Mai eladott darab: {stats.todayCount}
           </Text>
         </View>
 
@@ -949,34 +1039,28 @@ export default function CloudApp() {
           data={sales}
           keyExtractor={x => String(x.id)}
           refreshing={refreshing}
-          onRefresh={loadData}
+          onRefresh={refresh}
           ListEmptyComponent={
-            <Text style={s.empty}>
-              Még nincs rögzített eladás.
-            </Text>
+            <Text style={S.empty}>Még nincs eladás.</Text>
           }
           renderItem={({ item }) => {
-            const product = items.find(
-              x => x.id === item.ruha_id
-            );
+            const product = items.find(x => x.id === item.ruha_id);
 
             return (
-              <View style={s.product}>
+              <View style={S.product}>
                 <View style={{ flex: 1 }}>
-                  <Text style={s.productName}>
+                  <Text style={S.productName}>
                     {product?.nev || 'Eladott ruha'}
                   </Text>
-                  <Text style={s.muted}>
+                  <Text style={S.small}>
                     {item.darabszam} db •{' '}
                     {item.eladva
-                      ? new Date(item.eladva)
-                          .toLocaleString('hu-HU')
+                      ? new Date(item.eladva).toLocaleString('hu-HU')
                       : ''}
                   </Text>
                 </View>
-                <Text style={s.price}>
-                  {money(item.osszeg)}
-                </Text>
+
+                <Text style={S.price}>{money(item.osszeg)}</Text>
               </View>
             );
           }}
@@ -986,117 +1070,69 @@ export default function CloudApp() {
   } else if (tab === 'stats') {
     content = (
       <ScrollView>
-        <Text style={s.heading}>Statisztikák</Text>
+        <Text style={S.heading}>Statisztika</Text>
 
-        <View style={s.tiles}>
-          <Tile
-            icon="👕"
-            title="Készlet"
-            value={`${stats.stock} db`}
-          />
-          <Tile
-            icon="🏷️"
-            title="Termékfajta"
-            value={stats.kinds}
-          />
-          <Tile
-            icon="⚠️"
-            title="Kevés / nincs"
-            value={stats.low}
-          />
-          <Tile
-            icon="🛒"
-            title="Mai eladás"
-            value={stats.todayCount}
-          />
-        </View>
+        {[
+          ['Összes készlet', stats.count + ' db'],
+          ['Termékfajták', stats.types],
+          ['Kevés vagy elfogyott', stats.low],
+          ['Mai eladás', stats.todayCount + ' db'],
+          ['Mai bevétel', money(stats.todayMoney)],
+          ['Készlet eladási értéke', money(stats.value)],
+          ['Rögzített bevétel', money(stats.revenue)]
+        ].map(([label, value]) => (
+          <View key={label} style={S.panel}>
+            <Text style={S.small}>{label}</Text>
+            <Text style={S.big}>{value}</Text>
+          </View>
+        ))}
 
-        <View style={s.panel}>
-          <Text style={s.muted}>Mai bevétel</Text>
-          <Text style={s.bigNumber}>
-            {money(stats.todayRevenue)}
-          </Text>
-        </View>
+        <Text style={S.small}>
+          A bevételi összesítés az utolsó 300 betöltött
+          eladás alapján készül.
+        </Text>
 
-        <View style={s.panel}>
-          <Text style={s.muted}>
-            Készlet teljes eladási értéke
-          </Text>
-          <Text style={s.bigNumber}>
-            {money(stats.stockValue)}
-          </Text>
-        </View>
-
-        <View style={s.panel}>
-          <Text style={s.muted}>
-            Rögzített eladások bevétele
-          </Text>
-          <Text style={s.bigNumber}>
-            {money(stats.totalRevenue)}
-          </Text>
-          <Text style={s.muted}>
-            Az utolsó 300 betöltött eladás alapján.
-          </Text>
-        </View>
-
-        <Button
-          title="Adatok frissítése"
-          onPress={loadData}
-          disabled={refreshing}
-        />
+        <Btn title="Frissítés" onPress={refresh} />
       </ScrollView>
     );
   } else {
     content = (
       <ScrollView>
-        <Text style={s.heading}>Továbbiak</Text>
+        <Text style={S.heading}>Beállítások</Text>
 
-        <View style={s.panel}>
-          <Text style={s.productName}>Fiók</Text>
-          <Text style={s.muted}>
+        <View style={S.panel}>
+          <Text style={S.productName}>
             {employee.nev || 'Dolgozó'}
           </Text>
-          <Text style={s.muted}>
-            Jogosultság:{' '}
-            {isOwner ? 'Tulajdonos' : 'Dolgozó'}
+
+          <Text style={S.small}>
+            {owner ? 'Tulajdonos' : 'Dolgozó'}
           </Text>
         </View>
 
-        <View style={s.panel}>
-          <Text style={s.productName}>
-            Felhős készlet
-          </Text>
-          <Text style={s.muted}>
-            Az adatok a közös Supabase-adatbázisban vannak.
-          </Text>
-          <Text style={s.muted}>
-            A régi, telefonon tárolt készlet
-            még nincs átmásolva.
+        <View style={S.panel}>
+          <Text style={S.productName}>Közös felhő</Text>
+          <Text style={S.small}>
+            A ruhák, eladások és feltöltött képek a
+            közös felhős rendszerhez kapcsolódnak.
           </Text>
         </View>
 
-        <Button
-          title="Készlet frissítése"
-          onPress={loadData}
-        />
+        <Btn title="Adatok frissítése" onPress={refresh} />
 
-        <Button
+        <Btn
           title="Kijelentkezés"
-          danger
+          red
           onPress={() => Alert.alert(
             'Kijelentkezés',
-            'Biztosan kijelentkezel erről a telefonról?',
+            'Biztosan kijelentkezel?',
             [
               { text: 'Mégse', style: 'cancel' },
               {
                 text: 'Kijelentkezés',
                 onPress: async () => {
-                  const { error } =
-                    await supabase.auth.signOut();
-
-                  if (error) {
-                    Alert.alert('Hiba', error.message);
-                  }
+                  const { error } = await supabase.auth.signOut();
+                  if (error) Alert.alert('Hiba', error.message);
                 }
               }
             ]
@@ -1107,39 +1143,30 @@ export default function CloudApp() {
   }
 
   return (
-    <SafeAreaView style={s.page}>
-      <View style={{ flex: 1 }}>
-        {content}
-      </View>
+    <SafeAreaView style={S.page}>
+      <View style={{ flex: 1 }}>{content}</View>
 
-      <View style={s.nav}>
+      <View style={S.nav}>
         {[
           ['home', '⌂', 'Kezdőlap'],
-          ['stock', '♧', 'Készlet'],
+          ['stock', '👕', 'Készlet'],
           ['sales', '🛒', 'Eladás'],
           ['stats', '▥', 'Statisztika'],
           ['more', '☰', 'Több']
         ].map(([key, icon, label]) => (
           <TouchableOpacity
             key={key}
-            onPress={() => goTo(key)}
+            onPress={() => navigate(key)}
             style={[
-              s.navItem,
-              tab === key && s.navActive
+              S.navItem,
+              tab === key && S.navActive
             ]}
           >
+            <Text style={S.navIcon}>{icon}</Text>
             <Text style={[
-              s.navIcon,
+              S.navLabel,
               tab === key && { color: C.dark }
-            ]}>
-              {icon}
-            </Text>
-            <Text style={[
-              s.navText,
-              tab === key && { color: C.dark }
-            ]}>
-              {label}
-            </Text>
+            ]}>{label}</Text>
           </TouchableOpacity>
         ))}
       </View>
@@ -1147,7 +1174,7 @@ export default function CloudApp() {
   );
 }
 
-const s = StyleSheet.create({
+const S = StyleSheet.create({
   page: {
     flex: 1,
     backgroundColor: C.bg,
@@ -1156,15 +1183,14 @@ const s = StyleSheet.create({
   },
   center: {
     flex: 1,
-    justifyContent: 'center',
     alignItems: 'center',
-    gap: 14
+    justifyContent: 'center'
   },
   hero: {
     backgroundColor: C.dark,
     padding: 22,
     borderRadius: 22,
-    marginBottom: 16
+    marginBottom: 15
   },
   heroTitle: {
     fontSize: 34,
@@ -1173,32 +1199,31 @@ const s = StyleSheet.create({
   },
   heroSub: {
     color: '#cbe7d8',
-    marginTop: 3,
-    fontSize: 13
+    fontSize: 13,
+    marginTop: 4
   },
-  heroWelcome: {
+  welcome: {
     color: 'white',
-    fontSize: 16,
-    marginTop: 17
+    fontSize: 17,
+    marginTop: 18
   },
   tiles: {
     flexDirection: 'row',
     flexWrap: 'wrap',
-    justifyContent: 'space-between',
-    marginBottom: 12
+    justifyContent: 'space-between'
   },
   tile: {
     width: '48.5%',
-    backgroundColor: C.light,
-    padding: 15,
-    borderRadius: 18,
-    marginBottom: 10,
-    alignItems: 'center',
     minHeight: 115,
-    justifyContent: 'center'
+    backgroundColor: C.pale,
+    borderRadius: 18,
+    padding: 14,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginBottom: 10
   },
   tileIcon: {
-    fontSize: 23,
+    fontSize: 25,
     marginBottom: 5
   },
   tileValue: {
@@ -1207,20 +1232,31 @@ const s = StyleSheet.create({
     color: C.dark,
     textAlign: 'center'
   },
-  tileTitle: {
-    color: C.green,
+  tileLabel: {
     fontSize: 12,
-    textAlign: 'center',
-    marginTop: 4
+    color: C.green,
+    marginTop: 5
   },
-  searchWrap: {
+  heading: {
+    fontSize: 27,
+    fontWeight: '900',
+    color: C.dark,
+    marginBottom: 12
+  },
+  section: {
+    fontSize: 20,
+    fontWeight: '800',
+    color: C.dark,
+    marginVertical: 14
+  },
+  searchRow: {
     flexDirection: 'row',
     alignItems: 'center',
     backgroundColor: 'white',
-    borderRadius: 14,
-    paddingHorizontal: 13,
     borderWidth: 1,
     borderColor: C.border,
+    borderRadius: 14,
+    paddingHorizontal: 13,
     marginBottom: 12
   },
   search: {
@@ -1230,20 +1266,11 @@ const s = StyleSheet.create({
   },
   chip: {
     paddingHorizontal: 15,
-    paddingVertical: 9,
-    backgroundColor: C.light,
+    paddingVertical: 10,
+    backgroundColor: C.pale,
     borderRadius: 20,
     marginRight: 8,
-    marginBottom: 2
-  },
-  chipActive: {
-    backgroundColor: C.green
-  },
-  sectionTitle: {
-    fontSize: 20,
-    fontWeight: '800',
-    color: C.dark,
-    marginVertical: 12
+    marginBottom: 12
   },
   actions: {
     flexDirection: 'row',
@@ -1252,16 +1279,16 @@ const s = StyleSheet.create({
   },
   action: {
     width: '31.5%',
+    padding: 13,
     backgroundColor: 'white',
+    borderRadius: 16,
     borderWidth: 1,
     borderColor: C.border,
-    borderRadius: 16,
     alignItems: 'center',
-    padding: 13,
-    marginBottom: 9
+    marginBottom: 10
   },
   actionIcon: {
-    fontSize: 29,
+    fontSize: 27,
     marginBottom: 7
   },
   actionLabel: {
@@ -1274,87 +1301,81 @@ const s = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     backgroundColor: 'white',
-    borderRadius: 16,
     padding: 12,
-    marginBottom: 9,
+    borderRadius: 16,
     borderWidth: 1,
     borderColor: C.border,
+    marginBottom: 9,
     gap: 12
   },
-  productImage: {
+  thumb: {
     width: 70,
     height: 78,
+    backgroundColor: C.pale,
     borderRadius: 12,
-    backgroundColor: C.light,
     alignItems: 'center',
     justifyContent: 'center'
+  },
+  thumbImage: {
+    width: 68,
+    height: 76,
+    borderRadius: 10
   },
   productName: {
     fontSize: 16,
     fontWeight: '800',
     color: C.dark
   },
-  muted: {
-    color: C.gray,
+  small: {
     fontSize: 13,
-    marginTop: 4
-  },
-  price: {
-    color: C.dark,
-    fontWeight: '800',
-    fontSize: 16,
+    color: C.gray,
     marginTop: 5
   },
-  stock: {
-    backgroundColor: '#e6f2dc',
+  price: {
+    fontSize: 16,
+    fontWeight: '800',
     color: C.dark,
-    overflow: 'hidden',
-    borderRadius: 10,
-    paddingHorizontal: 9,
-    paddingVertical: 6,
-    fontSize: 12,
+    marginTop: 5
+  },
+  stockTag: {
+    backgroundColor: C.pale,
+    padding: 9,
+    borderRadius: 10
+  },
+  stockText: {
+    color: C.dark,
     fontWeight: '800'
-  },
-  outStock: {
-    backgroundColor: '#fbe3e1',
-    color: C.red
-  },
-  heading: {
-    fontSize: 27,
-    fontWeight: '900',
-    color: C.dark,
-    marginBottom: 8
   },
   panel: {
     backgroundColor: 'white',
-    padding: 17,
     borderRadius: 17,
+    padding: 17,
     marginBottom: 13,
     borderWidth: 1,
     borderColor: C.border
   },
-  bigNumber: {
-    fontSize: 28,
+  big: {
+    fontSize: 27,
     fontWeight: '900',
     color: C.dark,
-    marginVertical: 7
+    marginTop: 7
   },
-  button: {
+  btn: {
     backgroundColor: C.green,
-    padding: 15,
     borderRadius: 12,
+    padding: 16,
     alignItems: 'center',
     marginBottom: 10
   },
-  secondaryButton: {
-    backgroundColor: C.light,
+  btnLight: {
+    backgroundColor: C.pale,
     borderWidth: 1,
     borderColor: C.border
   },
-  buttonText: {
+  btnText: {
     color: 'white',
-    fontSize: 15,
-    fontWeight: '800'
+    fontWeight: '800',
+    fontSize: 15
   },
   label: {
     fontWeight: '700',
@@ -1363,30 +1384,31 @@ const s = StyleSheet.create({
   },
   input: {
     backgroundColor: C.bg,
-    borderRadius: 11,
     borderWidth: 1,
     borderColor: C.border,
+    borderRadius: 11,
     padding: 13,
     fontSize: 16,
     color: C.dark
   },
-  qrPanel: {
+  formImage: {
+    width: '100%',
+    height: 200,
+    borderRadius: 12,
+    marginBottom: 12
+  },
+  detailImage: {
+    width: '100%',
+    height: 240,
+    borderRadius: 16,
+    marginVertical: 12
+  },
+  qr: {
     backgroundColor: 'white',
     borderRadius: 18,
     padding: 22,
     alignItems: 'center',
-    marginVertical: 16
-  },
-  code: {
-    color: C.dark,
-    fontWeight: '700',
-    marginTop: 14
-  },
-  detailPhoto: {
-    width: '100%',
-    height: 220,
-    borderRadius: 15,
-    marginTop: 14
+    marginVertical: 14
   },
   detailRow: {
     flexDirection: 'row',
@@ -1405,7 +1427,7 @@ const s = StyleSheet.create({
   empty: {
     color: C.gray,
     textAlign: 'center',
-    marginVertical: 30
+    marginTop: 35
   },
   nav: {
     flexDirection: 'row',
@@ -1417,21 +1439,21 @@ const s = StyleSheet.create({
   navItem: {
     flex: 1,
     alignItems: 'center',
-    paddingVertical: 9,
+    paddingVertical: 10,
     borderRadius: 14
   },
   navActive: {
     backgroundColor: '#dff5d6'
   },
   navIcon: {
-    color: 'white',
     fontSize: 23,
-    fontWeight: '800'
+    textAlign: 'center'
   },
-  navText: {
-    color: 'white',
+  navLabel: {
     fontSize: 10,
+    color: 'white',
     fontWeight: '700',
-    marginTop: 3
+    textAlign: 'center',
+    marginTop: 4
   }
 });
